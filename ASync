@@ -1,0 +1,135 @@
+import os
+import json
+import subprocess
+import urllib.request
+
+BASE_DIR = "/var/ASynk/install"
+CONFIG_PATH = "/etc/ASynk/config.json"
+BOOTSTRAP_REPO = "https://raw.githubusercontent.com/Codespace0x25/ASynk_Repo/main/X86_64/bootstrap.json"
+SYMLINK_DIRS = {
+    "bin": "/usr/bin",
+    "lib": "/usr/lib",
+    "include": "/usr/include",
+    "share": "/usr/share"
+}
+
+# Ensure base directory exists
+os.makedirs(BASE_DIR, exist_ok=True)
+
+# Load bootstrap configuration
+def fetch_config():
+    config_path = "/etc/ASynk/bootstrap.json"
+    if not os.path.exists(config_path):
+        print(f"{config_path} not found. Fetching from remote URL...")
+        os.makedirs("/etc/ASynk", exist_ok=True)
+        urllib.request.urlretrieve(BOOTSTRAP_REPO, config_path)
+    with open(config_path, "r") as f:
+        return json.load(f)
+
+# Check for an installed dependency
+def is_dependency_installed(dep_name):
+    dep_path = os.path.join(BASE_DIR, dep_name)
+    return os.path.exists(dep_path)
+
+# Install dependencies
+def install_dependencies(dependencies):
+    for dep in dependencies:
+        if not is_dependency_installed(dep):
+            print(f"Dependency {dep} not found. Installing...")
+            install_package(dep)
+
+# Download and extract tarball
+def download_and_extract(tarball, url, dest_dir):
+    tarball_path = os.path.join(dest_dir, tarball)
+    if not os.path.exists(tarball_path):
+        print(f"Downloading {tarball} from {url}...")
+        urllib.request.urlretrieve(url, tarball_path)
+    print(f"Extracting {tarball}...")
+    subprocess.run(["tar", "-xf", tarball, "-C", dest_dir], check=True)
+
+# Create symlinks
+def create_symlinks(package_name):
+    package_dir = os.path.join(BASE_DIR, package_name, "files")
+    for subdir, system_dir in SYMLINK_DIRS.items():
+        src_dir = os.path.join(package_dir, subdir)
+        if os.path.exists(src_dir):
+            for item in os.listdir(src_dir):
+                src_path = os.path.join(src_dir, item)
+                dest_path = os.path.join(system_dir, item)
+                if not os.path.exists(dest_path):
+                    print(f"Creating symlink: {dest_path} -> {src_path}")
+                    os.symlink(src_path, dest_path)
+
+# Build package
+def build_package(pkg_name, pkg_data):
+    print(f"\nProcessing package: {pkg_name}")
+    package_dir = os.path.join(BASE_DIR, pkg_name)
+    files_dir = os.path.join(package_dir, "files")
+    os.makedirs(files_dir, exist_ok=True)
+
+    tarball = pkg_data["tarball"]
+    url = pkg_data["url"]
+    dependencies = pkg_data["depindincs"]
+    build_commands = pkg_data["build"]
+
+    # Install dependencies
+    install_dependencies(dependencies)
+
+    # Download and extract tarball
+    download_and_extract(tarball, url, BASE_DIR)
+
+    # Run build commands
+    src_dir = os.path.join(BASE_DIR, tarball.replace(".tar.xz", "").replace(".tar.gz", ""))
+    os.chdir(src_dir)
+    for command in build_commands:
+        print(f"Running: {command}")
+        subprocess.run(command.replace("$(nprog)", str(os.cpu_count())), shell=True, check=True)
+
+    # Copy files to package directory
+    subprocess.run(["cp", "-r", ".", files_dir], check=True)
+
+    # Create symlinks
+    create_symlinks(pkg_name)
+
+    # Write metadata
+    metadata = {"name": pkg_name, "dependencies": dependencies}
+    with open(os.path.join(package_dir, "metadata.json"), "w") as f:
+        json.dump(metadata, f)
+
+# Install package
+def install_package(pkg_name):
+    config = fetch_config()
+    if pkg_name in config:
+        build_package(pkg_name, config[pkg_name])
+    else:
+        print(f"Error: Package '{pkg_name}' not found in the repository.")
+
+# Main command-line interface
+def main():
+    import argparse
+    parser = argparse.ArgumentParser(description="ASynk Package Manager")
+    parser.add_argument("-I", "--install", help="Install a package", action="store_true")
+    parser.add_argument("-s", "--sync", help="Sync with the repository before installing", action="store_true")
+    parser.add_argument("package", help="Name of the package to install", nargs="?")
+    args = parser.parse_args()
+
+    # Sync repository if requested
+    if args.sync:
+        sync_repo()
+
+    # Install package if requested
+    if args.install:
+        if not args.package:
+            print("Error: No package specified for installation.")
+            return
+        install_package(args.package)
+    else:
+        print("Error: No valid action specified. Use -I to install.")
+
+def sync_repo():
+    print("Syncing repository...")
+    urllib.request.urlretrieve(BOOTSTRAP_REPO, "/etc/ASynk/bootstrap.json")
+    print("Repository synced successfully.")
+
+if __name__ == "__main__":
+    main()
